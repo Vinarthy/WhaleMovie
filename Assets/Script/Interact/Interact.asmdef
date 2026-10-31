@@ -1,0 +1,6 @@
+{
+	"name": "Interact",
+	"references": [
+		"Unity.XR.Hands"
+	]
+}

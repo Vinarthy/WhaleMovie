@@ -1,0 +1,13 @@
+{
+  "name": "SceneStory.Editor",
+  "rootNamespace": "AIBuilder.CreatureStage",
+  "references": [
+    "SceneStory.Runtime",
+    "Unity.Timeline",
+    "Unity.Timeline.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "autoReferenced": true
+}

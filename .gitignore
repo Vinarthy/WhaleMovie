@@ -1,0 +1,34 @@
+# Unity generated files
+/Library/
+/Temp/
+/Obj/
+/obj/
+/Logs/
+/UserSettings/
+/Build/
+/Builds/
+/MemoryCaptures/
+/Recordings/
+
+# Local editor and project files
+/.vs/
+/.idea/
+/.vscode/
+*.csproj
+*.sln
+*.suo
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.unityproj
+*.sln.docstates
+*.tmp
+*.log
+
+# Generated documents, screenshots, and unrelated local data
+/_softcopy_work/
+/data/
+/*.docx
+Thumbs.db
+.DS_Store

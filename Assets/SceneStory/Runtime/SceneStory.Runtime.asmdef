@@ -1,0 +1,9 @@
+{
+  "name": "SceneStory.Runtime",
+  "rootNamespace": "AIBuilder.CreatureStage",
+  "references": [
+    "Unity.Timeline"
+  ],
+  "includePlatforms": [],
+  "autoReferenced": true
+}

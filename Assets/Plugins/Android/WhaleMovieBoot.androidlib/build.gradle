@@ -1,0 +1,27 @@
+apply plugin: 'com.android.library'
+
+// Unity evaluates the parent unityLibrary before this child module.
+def unityAndroid = project(':unityLibrary').extensions.getByName('android')
+
+android {
+    namespace 'com.lollyproject.whalemovie.boot'
+    compileSdkVersion unityAndroid.compileSdkVersion
+    buildToolsVersion unityAndroid.buildToolsVersion
+
+    defaultConfig {
+        minSdkVersion unityAndroid.defaultConfig.minSdkVersion.apiLevel
+        targetSdkVersion unityAndroid.defaultConfig.targetSdkVersion.apiLevel
+    }
+
+    sourceSets {
+        main {
+            manifest.srcFile 'AndroidManifest.xml'
+            java.srcDirs = ['src']
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+}
