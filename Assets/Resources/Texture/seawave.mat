@@ -52,7 +52,7 @@ Material:
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     - _NormalMap:
-        m_Texture: {fileID: 2800000, guid: b61ce4441f06a98418653d4f6ba5cec5, type: 3}
+        m_Texture: {fileID: 2800000, guid: 8a189f3e1fc8faf42ac10a46e0b4ab6a, type: 3}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     - _OcclusionMap:
@@ -81,36 +81,40 @@ Material:
     - _Metallic: 0
     - _Mode: 0
     - _NormalDisturbance: 0.525
-    - _NormalScale: 0.43
-    - _NormalSpeed: 0.02
-    - _NormalTiling: 0.05
+    - _NormalScale: 1.15
+    - _NormalSpeed: 0.06
+    - _NormalTiling: 0.55
     - _OcclusionStrength: 1
     - _Parallax: 0.02
-    - _RandomDirection: 1
-    - _ReflectionDistortion: 0.1
-    - _ReflectionIntensity: 0.4
+    - _PlanarReflectionStrength: 0.78
+    - _RandomDirection: 0.94
+    - _ReflectionDistortion: 0.25
+    - _ReflectionIntensity: 0.38
+    - _ReflectionRoughness: 0.1
     - _ReflectionStrength: 0.506
     - _RefractionGradientRange: 2
-    - _RefractionIntensity: 0.1
-    - _SceneDepth: 1.66
-    - _Smoothness: 8
+    - _RefractionIntensity: 0.0405
+    - _RefractionVisibility: 0.535
+    - _SceneDepth: 5.57
+    - _Smoothness: 42
     - _SmoothnessTextureChannel: 0
     - _SpecularHighlights: 1
     - _Speed: 1
     - _SrcBlend: 1
     - _UVSec: 0
-    - _WaveCount: 16
+    - _WarmStreakStrength: 0.4
+    - _WaveCount: 30
     - _WaveLength: 1.22
-    - _WaveSpeed: 0.37
-    - _WavelengthMax: 1.84
-    - _WavelengthMin: 0
-    - _WavesteepnessMax: 3.29
-    - _WavesteepnessMin: 0
+    - _WaveSpeed: 0.48
+    - _WavelengthMax: 12
+    - _WavelengthMin: 2.2
+    - _WavesteepnessMax: 0.72
+    - _WavesteepnessMin: 0.08
     - _ZWrite: 1
     m_Colors:
-    - _BaseColor: {r: 0.3704955, g: 0.7900418, b: 0.8238993, a: 0}
+    - _BaseColor: {r: 0.64465404, g: 0.97253376, b: 1, a: 1}
     - _Color: {r: 1, g: 1, b: 1, a: 1}
     - _Direction: {r: 1, g: 1, b: 0, a: 0}
     - _EmissionColor: {r: 0, g: 0, b: 0, a: 1}
-    - _SpecularColor: {r: 0.9936579, g: 1, b: 0.91509426, a: 1}
+    - _SpecularColor: {r: 1, g: 1, b: 1, a: 1}
   m_BuildTextureStacks: []
