@@ -4,6 +4,10 @@ using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using UnityEngine.SceneManagement;
 using UnityEngine.XR;
+#if UNITY_EDITOR
+using UnityEditor;
+using UnityEditor.SceneManagement;
+#endif
 
 /// <summary>
 /// Captures the scene on both sides of the water plane for the VR water shader.
@@ -19,6 +23,7 @@ public static class WaterSceneCapture
     private static readonly RenderTexture[] Reflection = new RenderTexture[2];
     private static readonly RenderTexture[] Refraction = new RenderTexture[2];
     private static readonly int CaptureReady = Shader.PropertyToID("_WaterCaptureReady");
+    private static readonly int CapturePass = Shader.PropertyToID("_WaterCapturePass");
     private static readonly int ReflectionLeft = Shader.PropertyToID("_WaterReflectionLeft");
     private static readonly int ReflectionRight = Shader.PropertyToID("_WaterReflectionRight");
     private static readonly int RefractionLeft = Shader.PropertyToID("_WaterRefractionLeft");
@@ -42,6 +47,30 @@ public static class WaterSceneCapture
         FindWater();
     }
 
+#if UNITY_EDITOR
+    [InitializeOnLoadMethod]
+    private static void InitializeEditor()
+    {
+        if (Application.isPlaying)
+            return;
+
+        RenderPipelineManager.beginCameraRendering -= BeginCamera;
+        RenderPipelineManager.beginCameraRendering += BeginCamera;
+        EditorApplication.hierarchyChanged -= FindWater;
+        EditorApplication.hierarchyChanged += FindWater;
+        EditorSceneManager.sceneOpened -= EditorSceneOpened;
+        EditorSceneManager.sceneOpened += EditorSceneOpened;
+        AssemblyReloadEvents.beforeAssemblyReload -= Cleanup;
+        AssemblyReloadEvents.beforeAssemblyReload += Cleanup;
+        FindWater();
+    }
+
+    private static void EditorSceneOpened(Scene scene, OpenSceneMode mode)
+    {
+        FindWater();
+    }
+#endif
+
     private static void SceneLoaded(Scene scene, LoadSceneMode mode)
     {
         Shader.SetGlobalFloat(CaptureReady, 0f);
@@ -60,7 +89,8 @@ public static class WaterSceneCapture
                     continue;
 
                 WaterRenderers.Add(renderer);
-                renderer.gameObject.layer = WaterCaptureLayer;
+                if (Application.isPlaying)
+                    renderer.gameObject.layer = WaterCaptureLayer;
                 if (WaterRenderers.Count == 1)
                     waterHeight = renderer.bounds.center.y;
                 break;
@@ -70,12 +100,17 @@ public static class WaterSceneCapture
 
     private static void BeginCamera(ScriptableRenderContext context, Camera source)
     {
-        if (renderingCapture || source == null || source == captureCamera || source.cameraType != CameraType.Game)
+        if (renderingCapture || source == null || source == captureCamera ||
+            (source.cameraType != CameraType.Game && source.cameraType != CameraType.SceneView))
             return;
 
         Shader.SetGlobalFloat(CaptureReady, 0f);
+        if (WaterRenderers.Count == 0 && source.cameraType == CameraType.SceneView)
+            FindWater();
         if (WaterRenderers.Count == 0)
             return;
+        if (WaterRenderers[0] != null)
+            waterHeight = WaterRenderers[0].bounds.center.y;
 
         if (captureCamera == null)
         {
@@ -96,9 +131,10 @@ public static class WaterSceneCapture
         int eyes = source.stereoEnabled ? 2 : 1;
         EnsureTextures(width, height, eyes);
 
-        int waterBit = 1 << WaterCaptureLayer;
-        source.cullingMask |= waterBit;
+        if (Application.isPlaying)
+            source.cullingMask |= 1 << WaterCaptureLayer;
         renderingCapture = true;
+        Shader.SetGlobalFloat(CapturePass, 1f);
         try
         {
             for (int eye = 0; eye < eyes; eye++)
@@ -120,6 +156,7 @@ public static class WaterSceneCapture
         }
         finally
         {
+            Shader.SetGlobalFloat(CapturePass, 0f);
             renderingCapture = false;
         }
     }
@@ -193,7 +230,7 @@ public static class WaterSceneCapture
         if (texture != null)
         {
             texture.Release();
-            Object.Destroy(texture);
+            DestroyCaptureObject(texture);
         }
 
         texture = new RenderTexture(width, height, 24, format)
@@ -210,13 +247,32 @@ public static class WaterSceneCapture
     {
         RenderPipelineManager.beginCameraRendering -= BeginCamera;
         SceneManager.sceneLoaded -= SceneLoaded;
+        Application.quitting -= Cleanup;
+#if UNITY_EDITOR
+        EditorApplication.hierarchyChanged -= FindWater;
+        EditorSceneManager.sceneOpened -= EditorSceneOpened;
+        AssemblyReloadEvents.beforeAssemblyReload -= Cleanup;
+#endif
         for (int eye = 0; eye < 2; eye++)
         {
-            if (Reflection[eye] != null) { Reflection[eye].Release(); Object.Destroy(Reflection[eye]); }
-            if (Refraction[eye] != null) { Refraction[eye].Release(); Object.Destroy(Refraction[eye]); }
+            if (Reflection[eye] != null) { Reflection[eye].Release(); DestroyCaptureObject(Reflection[eye]); }
+            if (Refraction[eye] != null) { Refraction[eye].Release(); DestroyCaptureObject(Refraction[eye]); }
         }
         if (captureCamera != null)
-            Object.Destroy(captureCamera.gameObject);
+            DestroyCaptureObject(captureCamera.gameObject);
         Shader.SetGlobalFloat(CaptureReady, 0f);
+        Shader.SetGlobalFloat(CapturePass, 0f);
+    }
+
+    private static void DestroyCaptureObject(Object value)
+    {
+#if UNITY_EDITOR
+        if (!Application.isPlaying)
+        {
+            Object.DestroyImmediate(value);
+            return;
+        }
+#endif
+        Object.Destroy(value);
     }
 }

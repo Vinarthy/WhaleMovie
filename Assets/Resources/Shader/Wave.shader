@@ -2,6 +2,7 @@ Shader "Custom/WaveWithReflection"
 {
     Properties
     {
+        [Enum(UnityEngine.Rendering.CullMode)] _Cull("Render Face", Float) = 2
         _Smoothness("Light Smoothness", Range(8,256)) = 42
         _SpecularColor("Specular Color", Color) = (1,1,1,1)
 
@@ -18,6 +19,10 @@ Shader "Custom/WaveWithReflection"
 
         _RampTex("Depth Ramp", 2D) = "white" {}
         _SceneDepth("Depth Range", Float) = 5.57
+        _SeabedFadeStart("Seabed Fade Start (m)", Float) = 3
+        _SeabedFadeMid("Seabed Fade Mid (m)", Float) = 8
+        _SeabedFadeEnd("Seabed Hidden At (m)", Float) = 10
+        _SeabedMidVisibility("Seabed Visibility At Mid", Range(0,1)) = 0.2
         _RefractionIntensity("Refraction Intensity", Range(0,0.1)) = 0.0405 // 折射参数
         _RefractionGradientRange("Refraction Depth Range", Float) = 2
 
@@ -46,6 +51,7 @@ Shader "Custom/WaveWithReflection"
 
         Blend SrcAlpha OneMinusSrcAlpha
         ZWrite Off
+        Cull [_Cull]
 
         Pass
         {
@@ -89,6 +95,10 @@ Shader "Custom/WaveWithReflection"
             float4 _Direction;
             half4 _BaseColor;
             float _SceneDepth;
+            float _SeabedFadeStart;
+            float _SeabedFadeMid;
+            float _SeabedFadeEnd;
+            float _SeabedMidVisibility;
             float _RefractionIntensity;
             float _RefractionGradientRange;
             float _NormalScale;
@@ -112,6 +122,7 @@ Shader "Custom/WaveWithReflection"
             float4x4 _WaterReflectionVPLeft;
             float4x4 _WaterReflectionVPRight;
             float _WaterCaptureReady;
+            float _WaterCapturePass;
 
             float Random(int seed)
             {
@@ -174,9 +185,10 @@ Shader "Custom/WaveWithReflection"
                 return OUT;
             }
 
-            half4 frag (Varings IN) : SV_Target
+            half4 frag (Varings IN, FRONT_FACE_TYPE facing : FRONT_FACE_SEMANTIC) : SV_Target
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(IN);
+                clip(0.5 - _WaterCapturePass);
                 Light light = GetMainLight();
                 float3 viewDirWS = normalize(GetWorldSpaceViewDir(IN.positionWS));
                 
@@ -190,6 +202,7 @@ Shader "Custom/WaveWithReflection"
                 
                 // 混合波浪法线和微波法线
                 float3 normalWS = normalize(IN.normalWS + float3(detailNormal.x, 0, detailNormal.y));
+                normalWS *= IS_FRONT_VFACE(facing, 1.0, -1.0);
 
                 // ===== 2. 反射 (Skybox/Reflection Probe) =====
                 // 使用扰动后的法线计算反射向量
@@ -202,12 +215,31 @@ Shader "Custom/WaveWithReflection"
 
                 // ===== 3. 深度与折射 =====
                 float2 screenUV = IN.projPos.xy / IN.projPos.w;
-                float sceneZ = LinearEyeDepth(SampleSceneDepth(screenUV), _ZBufferParams);
+                float rawSceneDepth = SampleSceneDepth(screenUV);
+                float sceneZ = LinearEyeDepth(rawSceneDepth, _ZBufferParams);
                 float waterZ = IN.projPos.z;
                 float depthDiff = saturate((sceneZ - waterZ) / _SceneDepth);
 
-                float2 offset = normalWS.xz * _RefractionIntensity;// 法线决定偏移方向，Intensity是扭曲程度
-                offset *= saturate(depthDiff / abs(_RefractionGradientRange) + 0.001);
+                // Use vertical world-space depth for the seabed fade. The existing
+                // eye-space depth range above continues to drive the color ramp.
+                #if UNITY_REVERSED_Z
+                    float sceneDepthNDC = rawSceneDepth;
+                #else
+                    float sceneDepthNDC = lerp(UNITY_NEAR_CLIP_VALUE, 1.0, rawSceneDepth);
+                #endif
+                float3 scenePositionWS = ComputeWorldSpacePosition(screenUV, sceneDepthNDC, UNITY_MATRIX_I_VP);
+                float seabedDepth = sceneZ > waterZ ? max(IN.positionWS.y - scenePositionWS.y, 0.0) : 0.0;
+                float fadeMid = max(_SeabedFadeMid, _SeabedFadeStart + 0.001);
+                float fadeEnd = max(_SeabedFadeEnd, fadeMid + 0.001);
+                float midBlend = smoothstep(_SeabedFadeStart, fadeMid, seabedDepth);
+                float endBlend = smoothstep(fadeMid, fadeEnd, seabedDepth);
+                float seabedVisibility = lerp(1.0, _SeabedMidVisibility, midBlend) * (1.0 - endBlend);
+
+                // Depth Range is measured in eye-space metres. A smooth falloff
+                // keeps the control responsive even when the seabed is farther away.
+                float depthBehindWater = max(sceneZ - waterZ, 0.0);
+                float refractionFade = depthBehindWater / (depthBehindWater + max(_RefractionGradientRange, 0.001));
+                float2 offset = normalWS.xz * (_RefractionIntensity * refractionFade);// 法线决定偏移方向
                 float2 refractUV = screenUV + offset;// 改变取景位置
                 
                 float sceneZ2 = LinearEyeDepth(SampleSceneDepth(refractUV), _ZBufferParams);
@@ -233,13 +265,15 @@ Shader "Custom/WaveWithReflection"
                 // ===== 5. 最终融合 =====
                 // 菲涅尔近似：水面侧看反射强，俯视折射强
                 float fresnel = pow(1.0 - saturate(dot(normalWS, viewDirWS)), 3.0);
+                // A small face-on reflection lets Intensity respond from above.
+                float reflectionWeight = _ReflectionIntensity * (0.15 + 0.85 * fresnel);
                 
                 float3 waterTint = depthColor * _BaseColor.rgb * (0.55 + 0.45 * lambert);
-                float transmission = lerp(0.95, _RefractionVisibility, depthDiff);
+                float transmission = lerp(0.95, _RefractionVisibility, depthDiff) * seabedVisibility;
                 float3 waterBody = lerp(waterTint, refractColor, transmission);
                 
                 // 将反射叠加到水体上
-                float3 finalColor = lerp(waterBody, reflection, fresnel * _ReflectionIntensity);
+                float3 finalColor = lerp(waterBody, reflection, reflectionWeight);
                 if (_WaterCaptureReady > 0.5)
                 {
                     float4 reflectedClip;
@@ -260,7 +294,7 @@ Shader "Custom/WaveWithReflection"
                         #else
                         sceneReflection = SAMPLE_TEXTURE2D(_WaterReflectionLeft, sampler_WaterReflectionLeft, reflectedUV).rgb;
                         #endif
-                        finalColor = lerp(finalColor, sceneReflection, _PlanarReflectionStrength * (0.18 + 0.82 * fresnel));
+                        finalColor = lerp(finalColor, sceneReflection, _PlanarReflectionStrength * reflectionWeight);
                     }
                 }
                 // 加上高光

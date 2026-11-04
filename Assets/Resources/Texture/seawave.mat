@@ -71,6 +71,7 @@ Material:
     m_Floats:
     - _Amplitude: 0.2
     - _BumpScale: 1
+    - _Cull: 0
     - _Cutoff: 0.5
     - _DetailNormalMapScale: 1
     - _DstBlend: 0
@@ -86,16 +87,20 @@ Material:
     - _NormalTiling: 0.55
     - _OcclusionStrength: 1
     - _Parallax: 0.02
-    - _PlanarReflectionStrength: 0.78
+    - _PlanarReflectionStrength: 0
     - _RandomDirection: 0.94
     - _ReflectionDistortion: 0.25
     - _ReflectionIntensity: 0.38
     - _ReflectionRoughness: 0.1
     - _ReflectionStrength: 0.506
     - _RefractionGradientRange: 2
-    - _RefractionIntensity: 0.0405
-    - _RefractionVisibility: 0.535
-    - _SceneDepth: 5.57
+    - _RefractionIntensity: 0.1
+    - _RefractionVisibility: 0.08
+    - _SceneDepth: 8
+    - _SeabedFadeEnd: 10
+    - _SeabedFadeMid: 8
+    - _SeabedFadeStart: 3
+    - _SeabedMidVisibility: 0.2
     - _Smoothness: 42
     - _SmoothnessTextureChannel: 0
     - _SpecularHighlights: 1
@@ -112,7 +117,7 @@ Material:
     - _WavesteepnessMin: 0.08
     - _ZWrite: 1
     m_Colors:
-    - _BaseColor: {r: 0.64465404, g: 0.97253376, b: 1, a: 1}
+    - _BaseColor: {r: 0.901, g: 1, b: 1, a: 1}
     - _Color: {r: 1, g: 1, b: 1, a: 1}
     - _Direction: {r: 1, g: 1, b: 0, a: 0}
     - _EmissionColor: {r: 0, g: 0, b: 0, a: 1}
