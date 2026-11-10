@@ -26,14 +26,14 @@ Material:
     m_Ints: []
     m_Floats:
     - _BlendWidth: 0.25
-    - _FogStrength: 0.451
-    - _GradientEnd: 1.08
+    - _FogStrength: 0.556
+    - _GradientEnd: 1.35
     - _GradientStart: 0
     - _VisibilityEnd: 14.87
     - _VisibilityStart: 2
     - _WaterLevel: 0
     m_Colors:
-    - _CenterTint: {r: 0, g: 0.9444442, b: 1, a: 0.03137255}
-    - _EdgeTint: {r: 0, g: 0.39223513, b: 0.6037736, a: 0.27058825}
-    - _FogColor: {r: 0.33539012, g: 0.76729554, b: 0.74192363, a: 0.7607843}
+    - _CenterTint: {r: 0, g: 1, b: 0.93665314, a: 0.1882353}
+    - _EdgeTint: {r: 0, g: 0, b: 0, a: 0.3764706}
+    - _FogColor: {r: 0.013349866, g: 0.23382114, b: 0.4716981, a: 0.8862745}
   m_BuildTextureStacks: []

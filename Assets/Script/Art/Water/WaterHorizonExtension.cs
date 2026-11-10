@@ -10,7 +10,7 @@ public sealed class WaterHorizonExtension : MonoBehaviour
     [SerializeField, Min(100f)] private float halfExtent = 500f;
     [SerializeField, Min(1f)] private float innerExtent = 80f;
     [SerializeField, Min(0.5f)] private float innerStep = 10f;
-    [SerializeField, Range(1, 64)] private int outerRings = 7;
+    [SerializeField, Range(1, 64)] private int outerRings = 2;
 
     private GameObject extensionObject;
     private Mesh extensionMesh;

@@ -1,0 +1,8 @@
+InstancingManager 使用说明
+
+层级：Manager（挂本脚本）→ 按区域或类型分组 → 实例根物体 → 网格或 LOD 子物体。
+带 LODGroup 的实例根物体：在 LODGroup 组件中指定各级 Renderer，并拖动屏幕占比分界线；Fade Mode 设为 None。Manager 读取这些设置并批量绘制当前级别，不再另设切换距离。
+不带 LODGroup 的实例根物体：Manager 将其所有 MeshRenderer 作为单级网格绘制。
+所有参与批量绘制的材质需启用 GPU Instancing；同网格、同材质的实例才能进入同一批次。
+运行时修改实例数量、网格、材质或 LODGroup 配置后调用 Rebuild()。移动实例时启用 Update Bounds Every Frame。
+带烘焙光照贴图、静态合批、透明材质或 SkinnedMeshRenderer 的物体不会被接管，仍使用原 Renderer。

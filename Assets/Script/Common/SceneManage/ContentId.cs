@@ -2,6 +2,7 @@ using UnityEngine;
 
 namespace WhaleMovie.SceneManage
 {
+    //从小到大按顺序播放
     public enum ContentId
     {
         None = 0,

@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.XR.Interaction.Toolkit.Inputs.Simulation;
 
 namespace WhaleMovie.SceneManage
 {
@@ -64,7 +65,16 @@ namespace WhaleMovie.SceneManage
 
         private void Start()
         {
+            DisableSimulator();
             StartCoroutine(InitializeRoutine());
+        }
+
+
+        private static void DisableSimulator()
+        {
+            XRDeviceSimulator simulator = XRDeviceSimulator.instance;
+            if (simulator != null && simulator.gameObject.activeSelf)
+                simulator.gameObject.SetActive(false);
         }
 
         private void OnDestroy()
