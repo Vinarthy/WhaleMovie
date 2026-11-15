@@ -9,62 +9,30 @@ namespace WhaleMovie.Common
     /// 用于统一放进GPU实例化管理器中进行管理
     /// Hierarchy: Manager -> spatial/type group -> instance root -> mesh children.
     /// LODGroup supplies the mesh levels and screen-size thresholds for instanced rendering.
-    /// Add one manager per independently culled area (or per object type).
+    /// Each direct child groups static instances; culling is performed per instance.
     /// 作为一个总管理器放在Group上面，并给自己的子物体开启合批和lod
     /// 在每个实例根物体上加 LODGroup，把 LOD0、LOD1、LOD2 各自的 MeshRenderer 填进去。
-    /// 各级网格的材质开启 GPU Instancing。VR 场景建议在 Manager 的 Target Camera 指定主相机，并确认 Cull Distance 不会过早把远处实例剔除。
     ///这个目前用于管理静态物体（主要为石头等静态自然物）
     ///行数有点多，不够精简，我需要将它精简
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class InstancingManager : MonoBehaviour
     {
-        private const int SafeMaxInstancesPerDraw = 256;
+        private const int MaxInstancesPerDraw = 256;
 
-        [Header("Camera and culling")]
+        [Header("Camera")]
         [SerializeField] private Camera targetCamera;
-        [SerializeField, Min(0.01f)] private float cullDistance = 80f;
-        [SerializeField] private bool frustumCulling = true;
 
-        [Header("Groups")]
-        [Tooltip("Expand group bounds to allow for shader-driven movement such as grass sway.")]
-        [SerializeField, Min(0f)] private float boundsPadding = 1f;
-        [Tooltip("Enable if instance transforms change at runtime. Static rocks/grass can leave this off.")]
-        [SerializeField] private bool updateBoundsEveryFrame;
-        [SerializeField, Range(1, SafeMaxInstancesPerDraw)] private int maxInstancesPerDraw = SafeMaxInstancesPerDraw;
-
-        private readonly List<InstanceGroup> groups = new List<InstanceGroup>();
-        private readonly Dictionary<BatchKey, DrawBatch> batches = new Dictionary<BatchKey, DrawBatch>();
-        private readonly List<MeshRenderer> hiddenRenderers = new List<MeshRenderer>();
-        private readonly List<LODGroup> disabledLodGroups = new List<LODGroup>();
+        private readonly List<InstanceRecord> instances = new List<InstanceRecord>();
+        private readonly Dictionary<(Mesh mesh, Material material, int submesh), List<Matrix4x4>> batches =
+            new Dictionary<(Mesh mesh, Material material, int submesh), List<Matrix4x4>>();
         private readonly Plane[] frustumPlanes = new Plane[6];
-        private readonly Matrix4x4[] drawBuffer = new Matrix4x4[SafeMaxInstancesPerDraw];
 
-        public int ManagedInstanceCount { get; private set; }
+        private void OnEnable() => Build();
 
-        private void OnEnable()
-        {
-            if (Application.isPlaying)
-                Rebuild();
-        }
+        private void OnDisable() => RestoreSourceRenderers();
 
-        private void OnDisable()
-        {
-            RestoreSourceRenderers();
-        }
-
-        private void OnValidate()
-        {
-            cullDistance = Mathf.Max(0.01f, cullDistance);
-            boundsPadding = Mathf.Max(0f, boundsPadding);
-            maxInstancesPerDraw = Mathf.Clamp(maxInstancesPerDraw, 1, SafeMaxInstancesPerDraw);
-        }
-
-        /// <summary>
-        /// Call after adding/removing instance children, changing meshes/materials, or editing LODGroups.
-        /// Moving existing instances only requires updateBoundsEveryFrame.
-        /// </summary>
-        public void Rebuild()
+        private void Build()
         {
             RestoreSourceRenderers();
             if (!Application.isPlaying || !isActiveAndEnabled)
@@ -81,61 +49,23 @@ namespace WhaleMovie.Common
             if (targetCamera == null)
                 return;
 
-            int skippedCount = 0;
-            string firstSkipReason = null;
-
-            // Each direct child is one spatial/type group; its children are individual instances.
+            // Each direct child groups instances; only the instance roots contain meshes.
             foreach (Transform groupRoot in transform)
             {
-                if (!groupRoot.gameObject.activeInHierarchy)
-                    continue;
-
-                var group = new InstanceGroup();
                 foreach (Transform instanceRoot in groupRoot)
                 {
-                    if (!instanceRoot.gameObject.activeInHierarchy)
+                    if (!TryCreateInstance(instanceRoot, out InstanceRecord instance))
                         continue;
 
-                    if (TryCreateInstance(instanceRoot, out InstanceRecord instance, out string reason))
-                    {
-                        group.Instances.Add(instance);
-                        if (group.Instances.Count == 1)
-                            group.Bounds = instance.Bounds;
-                        else
-                            group.Bounds.Encapsulate(instance.Bounds);
-                    }
-                    else if (reason != null)
-                    {
-                        skippedCount++;
-                        if (firstSkipReason == null)
-                            firstSkipReason = instanceRoot.name + ": " + reason;
-                    }
-                }
-
-                if (group.Instances.Count == 0)
-                    continue;
-
-                group.Bounds.Expand(boundsPadding * 2f);
-                groups.Add(group);
-                foreach (InstanceRecord instance in group.Instances)
-                {
-                    ManagedInstanceCount++;
-                    if (instance.LodGroup != null)
-                    {
-                        instance.LodGroup.enabled = false;
-                        disabledLodGroups.Add(instance.LodGroup);
-                    }
+                    instances.Add(instance);
+                    instance.LodGroup.enabled = false;
 
                     foreach (MeshRenderer renderer in instance.Renderers)
                     {
                         renderer.enabled = false;
-                        hiddenRenderers.Add(renderer);
                     }
                 }
             }
-
-            if (skippedCount > 0)
-                Debug.LogWarning($"InstancingManager left {skippedCount} instance(s) on their original renderers. First: {firstSkipReason}", this);
         }
 
         private void LateUpdate()
@@ -144,86 +74,65 @@ namespace WhaleMovie.Common
             {
                 targetCamera = Camera.main;
                 if (targetCamera != null)
-                    Rebuild();
+                    Build();
                 return;
             }
 
-            if (groups.Count == 0)
+            if (instances.Count == 0)
                 return;
 
-            if (frustumCulling)
-                GeometryUtility.CalculateFrustumPlanes(targetCamera, frustumPlanes);
+            GeometryUtility.CalculateFrustumPlanes(targetCamera, frustumPlanes);
 
-            foreach (DrawBatch batch in batches.Values)
-                batch.Clear();
+            foreach (List<Matrix4x4> matrices in batches.Values)
+                matrices.Clear();
 
             Vector3 cameraPosition = targetCamera.transform.position;
-            float maxDistanceSquared = cullDistance * cullDistance;
 
-            for (int groupIndex = 0; groupIndex < groups.Count; groupIndex++)
+            foreach (InstanceRecord instance in instances)
             {
-                InstanceGroup group = groups[groupIndex];
-                if (updateBoundsEveryFrame)
-                    UpdateGroupBounds(group);
-
-                if (group.Bounds.SqrDistance(cameraPosition) > maxDistanceSquared ||
-                    (frustumCulling && !GeometryUtility.TestPlanesAABB(frustumPlanes, group.Bounds)))
+                if (!GeometryUtility.TestPlanesAABB(frustumPlanes, instance.Bounds))
                     continue;
 
-                foreach (InstanceRecord instance in group.Instances)
+                int lodIndex = SelectLod(instance, cameraPosition);
+                if (lodIndex < 0)
+                    continue;
+
+                foreach (SourcePart part in instance.LodParts[lodIndex])
                 {
-                    if (instance.Root == null || !instance.Root.gameObject.activeInHierarchy)
-                        continue;
-
-                    if (instance.Bounds.SqrDistance(cameraPosition) > maxDistanceSquared ||
-                        (frustumCulling && !GeometryUtility.TestPlanesAABB(frustumPlanes, instance.Bounds)))
-                        continue;
-
-                    int lodIndex = SelectLod(instance, cameraPosition);
-                    if (lodIndex < 0)
-                        continue;
-                    foreach (SourcePart part in instance.LodParts[lodIndex])
+                    for (int submesh = 0; submesh < part.Mesh.subMeshCount; submesh++)
                     {
-                        Matrix4x4 matrix = part.Transform.localToWorldMatrix;
-                        for (int submesh = 0; submesh < part.Mesh.subMeshCount; submesh++)
+                        var key = (part.Mesh, part.Materials[submesh], submesh);
+                        if (!batches.TryGetValue(key, out List<Matrix4x4> matrices))
                         {
-                            var key = new BatchKey(part, submesh);
-                            if (!batches.TryGetValue(key, out DrawBatch batch))
-                            {
-                                batch = new DrawBatch(key);
-                                batches.Add(key, batch);
-                            }
-                            batch.Add(matrix, instance.Bounds);
+                            matrices = new List<Matrix4x4>();
+                            batches.Add(key, matrices);
                         }
+                        matrices.Add(part.Matrix);
                     }
                 }
             }
 
-            foreach (DrawBatch batch in batches.Values)
+            foreach (var batch in batches)
             {
-                if (batch.Matrices.Count == 0)
+                List<Matrix4x4> matrices = batch.Value;
+                if (matrices.Count == 0)
                     continue;
 
-                BatchKey key = batch.Key;
-                var renderParams = new RenderParams(key.Material)
+                var key = batch.Key;
+                var renderParams = new RenderParams(key.material)
                 {
                     camera = targetCamera,
-                    worldBounds = batch.Bounds,
-                    layer = key.Layer,
-                    renderingLayerMask = key.RenderingLayerMask,
-                    shadowCastingMode = key.ShadowCastingMode,
-                    receiveShadows = key.ReceiveShadows,
-                    lightProbeUsage = key.LightProbeUsage,
-                    reflectionProbeUsage = key.ReflectionProbeUsage
+                    layer = gameObject.layer,
+                    shadowCastingMode = ShadowCastingMode.On,
+                    receiveShadows = true
                 };
 
                 try
                 {
-                    for (int start = 0; start < batch.Matrices.Count; start += maxInstancesPerDraw)
+                    for (int start = 0; start < matrices.Count; start += MaxInstancesPerDraw)
                     {
-                        int count = Mathf.Min(maxInstancesPerDraw, batch.Matrices.Count - start);
-                        batch.Matrices.CopyTo(start, drawBuffer, 0, count);
-                        Graphics.RenderMeshInstanced(renderParams, key.Mesh, key.Submesh, drawBuffer, count);
+                        int count = Mathf.Min(MaxInstancesPerDraw, matrices.Count - start);
+                        Graphics.RenderMeshInstanced(renderParams, key.mesh, key.submesh, matrices, count, start);
                     }
                 }
                 catch (InvalidOperationException exception)
@@ -235,11 +144,8 @@ namespace WhaleMovie.Common
             }
         }
 
-        private int SelectLod(InstanceRecord instance, Vector3 cameraPosition)
+        private int SelectLod(InstanceRecord instance, Vector3 cameraPosition)//计算lod，这个的含义是视锥剔除
         {
-            if (instance.LodGroup == null)
-                return 0;
-
             LODGroup lodGroup = instance.LodGroup;
             Vector3 scale = lodGroup.transform.lossyScale;
             float worldSize = lodGroup.size * Mathf.Max(Mathf.Abs(scale.x), Mathf.Abs(scale.y), Mathf.Abs(scale.z));
@@ -262,81 +168,30 @@ namespace WhaleMovie.Common
             return -1; // LODGroup's culled range.
         }
 
-        private void UpdateGroupBounds(InstanceGroup group)
-        {
-            bool hasBounds = false;
-            foreach (InstanceRecord instance in group.Instances)
-            {
-                if (instance.Root == null)
-                    continue;
-
-                bool hasInstanceBounds = false;
-                Bounds instanceBounds = default;
-                foreach (MeshRenderer renderer in instance.Renderers)
-                {
-                    if (renderer == null)
-                        continue;
-                    if (!hasInstanceBounds)
-                    {
-                        instanceBounds = renderer.bounds;
-                        hasInstanceBounds = true;
-                    }
-                    else
-                        instanceBounds.Encapsulate(renderer.bounds);
-                }
-                if (!hasInstanceBounds)
-                    continue;
-
-                instance.Bounds = instanceBounds;
-                if (!hasBounds)
-                {
-                    group.Bounds = instanceBounds;
-                    hasBounds = true;
-                }
-                else
-                    group.Bounds.Encapsulate(instanceBounds);
-            }
-            if (hasBounds)
-                group.Bounds.Expand(boundsPadding * 2f);
-        }
-
-        private bool TryCreateInstance(Transform root, out InstanceRecord instance, out string reason)
+        private bool TryCreateInstance(Transform root, out InstanceRecord instance)
         {
             instance = null;
-            reason = null;
-            Renderer[] allRenderers = root.GetComponentsInChildren<Renderer>(true);
+            Renderer[] allRenderers = root.GetComponentsInChildren<Renderer>();
             var partsByRenderer = new Dictionary<MeshRenderer, SourcePart>();
 
             foreach (Renderer renderer in allRenderers)
             {
-                if (!renderer.gameObject.activeInHierarchy || !renderer.enabled)
+                if (!renderer.enabled)
                     continue;
                 if (!(renderer is MeshRenderer meshRenderer))
-                {
-                    reason = "contains a non-MeshRenderer (for example SkinnedMeshRenderer)";
                     return false;
-                }
                 if (meshRenderer.HasPropertyBlock() || meshRenderer.lightmapIndex >= 0 || meshRenderer.isPartOfStaticBatch)
-                {
-                    reason = "uses a property block, baked lightmap, or static batch";
                     return false;
-                }
 
                 MeshFilter filter = meshRenderer.GetComponent<MeshFilter>();
                 Mesh mesh = filter != null ? filter.sharedMesh : null;
                 Material[] materials = meshRenderer.sharedMaterials;
                 if (mesh == null || materials.Length < mesh.subMeshCount)
-                {
-                    reason = "missing mesh or submesh material";
                     return false;
-                }
                 for (int i = 0; i < mesh.subMeshCount; i++)
                 {
                     if (materials[i] == null || !materials[i].enableInstancing || materials[i].renderQueue >= (int)RenderQueue.Transparent)
-                    {
-                        reason = "material is missing, transparent, or has GPU Instancing disabled";
                         return false;
-                    }
                 }
                 partsByRenderer.Add(meshRenderer, new SourcePart(meshRenderer, mesh, materials));
             }
@@ -344,61 +199,36 @@ namespace WhaleMovie.Common
             if (partsByRenderer.Count == 0)
                 return false;
 
-            LODGroup[] lodGroups = root.GetComponentsInChildren<LODGroup>(true);
-            if (lodGroups.Length > 1)
-            {
-                reason = "contains multiple LODGroups; split it into separate instance roots";
+            LODGroup lodGroup = root.GetComponent<LODGroup>();
+            if (lodGroup == null || !lodGroup.enabled || lodGroup.fadeMode != LODFadeMode.None)
                 return false;
-            }
 
-            LODGroup lodGroup = lodGroups.Length == 1 ? lodGroups[0] : null;
-            SourcePart[][] lodParts;
-            float[] lodThresholds = null;
-            if (lodGroup == null)
-            {
-                lodParts = new[] { new List<SourcePart>(partsByRenderer.Values).ToArray() };
-            }
-            else
-            {
-                if (!lodGroup.enabled || lodGroup.fadeMode != LODFadeMode.None)
-                {
-                    reason = "LODGroup must be enabled with Fade Mode set to None";
-                    return false;
-                }
-                LOD[] lods = lodGroup.GetLODs();
-                if (lods.Length == 0)
-                {
-                    reason = "LODGroup has no LOD levels";
-                    return false;
-                }
+            LOD[] lods = lodGroup.GetLODs();
+            if (lods.Length == 0)
+                return false;
 
-                lodParts = new SourcePart[lods.Length][];
-                lodThresholds = new float[lods.Length];
-                var assigned = new HashSet<MeshRenderer>();
-                for (int lod = 0; lod < lods.Length; lod++)
+            SourcePart[][] lodParts = new SourcePart[lods.Length][];
+            float[] lodThresholds = new float[lods.Length];
+            var assigned = new HashSet<MeshRenderer>();
+            for (int lod = 0; lod < lods.Length; lod++)
+            {
+                lodThresholds[lod] = lods[lod].screenRelativeTransitionHeight;
+                var levelParts = new List<SourcePart>();
+                foreach (Renderer lodRenderer in lods[lod].renderers)
                 {
-                    lodThresholds[lod] = lods[lod].screenRelativeTransitionHeight;
-                    var levelParts = new List<SourcePart>();
-                    foreach (Renderer lodRenderer in lods[lod].renderers)
+                    if (lodRenderer is MeshRenderer meshRenderer && partsByRenderer.TryGetValue(meshRenderer, out SourcePart part))
                     {
-                        if (lodRenderer is MeshRenderer meshRenderer && partsByRenderer.TryGetValue(meshRenderer, out SourcePart part))
-                        {
-                            levelParts.Add(part);
-                            assigned.Add(meshRenderer);
-                        }
+                        levelParts.Add(part);
+                        assigned.Add(meshRenderer);
                     }
-                    lodParts[lod] = levelParts.ToArray();
                 }
-                if (assigned.Count != partsByRenderer.Count)
-                {
-                    reason = "an active MeshRenderer is not listed in its LODGroup";
-                    return false;
-                }
+                lodParts[lod] = levelParts.ToArray();
             }
+            if (assigned.Count != partsByRenderer.Count)
+                return false;
 
             instance = new InstanceRecord
             {
-                Root = root,
                 LodGroup = lodGroup,
                 LodParts = lodParts,
                 LodThresholds = lodThresholds,
@@ -415,38 +245,27 @@ namespace WhaleMovie.Common
                 else
                     instance.Bounds.Encapsulate(renderer.bounds);
             }
-            instance.Bounds.Expand(boundsPadding * 2f);
             return true;
         }
 
         private void RestoreSourceRenderers()
         {
-            foreach (MeshRenderer renderer in hiddenRenderers)
+            foreach (InstanceRecord instance in instances)
             {
-                if (renderer != null)
-                    renderer.enabled = true;
+                foreach (MeshRenderer renderer in instance.Renderers)
+                {
+                    if (renderer != null)
+                        renderer.enabled = true;
+                }
+                if (instance.LodGroup != null)
+                    instance.LodGroup.enabled = true;
             }
-            foreach (LODGroup lodGroup in disabledLodGroups)
-            {
-                if (lodGroup != null)
-                    lodGroup.enabled = true;
-            }
-            hiddenRenderers.Clear();
-            disabledLodGroups.Clear();
-            groups.Clear();
+            instances.Clear();
             batches.Clear();
-            ManagedInstanceCount = 0;
-        }
-
-        private sealed class InstanceGroup
-        {
-            public readonly List<InstanceRecord> Instances = new List<InstanceRecord>();
-            public Bounds Bounds;
         }
 
         private sealed class InstanceRecord
         {
-            public Transform Root;
             public LODGroup LodGroup;
             public SourcePart[][] LodParts;
             public float[] LodThresholds;
@@ -456,98 +275,15 @@ namespace WhaleMovie.Common
 
         private sealed class SourcePart
         {
-            public readonly MeshRenderer Renderer;
             public readonly Mesh Mesh;
             public readonly Material[] Materials;
-            public readonly Transform Transform;
+            public readonly Matrix4x4 Matrix;
 
             public SourcePart(MeshRenderer renderer, Mesh mesh, Material[] materials)
             {
-                Renderer = renderer;
                 Mesh = mesh;
                 Materials = materials;
-                Transform = renderer.transform;
-            }
-        }
-
-        private struct BatchKey : IEquatable<BatchKey>
-        {
-            public readonly Mesh Mesh;
-            public readonly Material Material;
-            public readonly int Submesh;
-            public readonly int Layer;
-            public readonly uint RenderingLayerMask;
-            public readonly ShadowCastingMode ShadowCastingMode;
-            public readonly bool ReceiveShadows;
-            public readonly LightProbeUsage LightProbeUsage;
-            public readonly ReflectionProbeUsage ReflectionProbeUsage;
-
-            public BatchKey(SourcePart part, int submesh)
-            {
-                MeshRenderer renderer = part.Renderer;
-                Mesh = part.Mesh;
-                Material = part.Materials[submesh];
-                Submesh = submesh;
-                Layer = renderer.gameObject.layer;
-                RenderingLayerMask = renderer.renderingLayerMask;
-                ShadowCastingMode = renderer.shadowCastingMode;
-                ReceiveShadows = renderer.receiveShadows;
-                LightProbeUsage = renderer.lightProbeUsage;
-                ReflectionProbeUsage = renderer.reflectionProbeUsage;
-            }
-
-            public bool Equals(BatchKey other)
-            {
-                return Mesh == other.Mesh && Material == other.Material &&
-                       Submesh == other.Submesh && Layer == other.Layer && RenderingLayerMask == other.RenderingLayerMask &&
-                       ShadowCastingMode == other.ShadowCastingMode && ReceiveShadows == other.ReceiveShadows &&
-                       LightProbeUsage == other.LightProbeUsage && ReflectionProbeUsage == other.ReflectionProbeUsage;
-            }
-
-            public override bool Equals(object obj) => obj is BatchKey other && Equals(other);
-
-            public override int GetHashCode()
-            {
-                unchecked
-                {
-                    int hash = Mesh != null ? Mesh.GetHashCode() : 0;
-                    hash = (hash * 397) ^ (Material != null ? Material.GetHashCode() : 0);
-                    hash = (hash * 397) ^ Submesh;
-                    hash = (hash * 397) ^ Layer;
-                    hash = (hash * 397) ^ RenderingLayerMask.GetHashCode();
-                    hash = (hash * 397) ^ (int)ShadowCastingMode;
-                    hash = (hash * 397) ^ (ReceiveShadows ? 1 : 0);
-                    hash = (hash * 397) ^ (int)LightProbeUsage;
-                    return (hash * 397) ^ (int)ReflectionProbeUsage;
-                }
-            }
-        }
-
-        private sealed class DrawBatch
-        {
-            public readonly BatchKey Key;
-            public readonly List<Matrix4x4> Matrices = new List<Matrix4x4>();
-            public Bounds Bounds;
-            private bool hasBounds;
-
-            public DrawBatch(BatchKey key) => Key = key;
-
-            public void Clear()
-            {
-                Matrices.Clear();
-                hasBounds = false;
-            }
-
-            public void Add(Matrix4x4 matrix, Bounds bounds)
-            {
-                Matrices.Add(matrix);
-                if (!hasBounds)
-                {
-                    Bounds = bounds;
-                    hasBounds = true;
-                }
-                else
-                    Bounds.Encapsulate(bounds);
+                Matrix = renderer.transform.localToWorldMatrix;
             }
         }
     }

@@ -3079,6 +3079,10 @@ PrefabInstance:
       propertyPath: m_Name
       value: "rock4\u4F4E\u6A21"
       objectReference: {fileID: 0}
+    - target: {fileID: 3861747032008275821, guid: 11446e15fb304f449a346edb51da8b49, type: 3}
+      propertyPath: m_StaticEditorFlags
+      value: 2147483647
+      objectReference: {fileID: 0}
     - target: {fileID: 4529634806672518615, guid: 11446e15fb304f449a346edb51da8b49, type: 3}
       propertyPath: m_LocalPosition.x
       value: -19.26
@@ -8597,6 +8601,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 1240336976}
+  - component: {fileID: 1240336977}
   m_Layer: 0
   m_Name: "\u6D77\u5E95\u5E03\u666F"
   m_TagString: Untagged
@@ -8663,6 +8668,19 @@ Transform:
   - {fileID: 1833141997}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1240336977
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1240336975}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3461109b8ca37cf4a9557e5d963f53b0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  targetCamera: {fileID: 0}
 --- !u!4 &1240540738 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: -8679921383154817045, guid: b6f317d81a16a41479234afbf36704f9, type: 3}
