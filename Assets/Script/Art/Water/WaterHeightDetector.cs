@@ -11,6 +11,7 @@ public sealed class WaterHeightDetector : MonoBehaviour
     [SerializeField] private float fallbackWaterLevel;
     [SerializeField, Min(0f)] private float enterDepth = 0.08f;
     [SerializeField, Min(0f)] private float exitHeight = 0.08f;
+    [SerializeField] private GameObject UnderWaterScene;
 
     public event Action EnteredWater;
     public event Action ExitedWater;
@@ -54,11 +55,13 @@ public sealed class WaterHeightDetector : MonoBehaviour
 
         if (!IsUnderwater && headY <= level - enterDepth)
         {
+            UnderWaterScene.SetActive(true);
             IsUnderwater = true;
             EnteredWater?.Invoke();
         }
         else if (IsUnderwater && headY >= level + exitHeight)
         {
+            UnderWaterScene.SetActive(false);
             IsUnderwater = false;
             ExitedWater?.Invoke();
         }

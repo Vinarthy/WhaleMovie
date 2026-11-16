@@ -8,38 +8,33 @@ namespace WhaleMovie.Common
     /// <summary>
     /// 用时按现有静态管理器的层级摆放：管理器 → 分组 → 实例根 → LOD 子物体。
     /// 实例根需要 Animator 和 LODGroup；LOD2 要合批，需使用 MeshRenderer、共享网格与材质，材质开启 GPU Instancing，并把 LODGroup 的 Fade Mode 设为 None。
+    ///LOD0、LOD1时保持原有animation动画，不合批
+    ///一般用于少量分散的含动画的物体如海草摆动和非群聚小动物
+    /// Animator、LODGroup 和 DynamicLODAnimation 均挂在实例根物体上。
     /// VR 中把管理器的 Target Camera 指向头显相机。
+    ///后续可以使用顶点动画进行管理，在动画管理脚本进行顶点动画的暂停与播放
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class DynamicGPUInstance : MonoBehaviour
     {
-        private const int SafeMaxInstancesPerDraw = 256;
+        private const int MaxInstancesPerDraw = 256;
 
-        [Header("Camera and culling")]
+        [Header("Camera")]
         [SerializeField] private Camera targetCamera;
-        [SerializeField] private bool frustumCulling = true;
-        [SerializeField, Range(1, SafeMaxInstancesPerDraw)] private int maxInstancesPerDraw = SafeMaxInstancesPerDraw;
 
         private readonly List<Instance> instances = new List<Instance>();
-        private readonly Dictionary<BatchKey, DrawBatch> batches = new Dictionary<BatchKey, DrawBatch>();
+        private readonly Dictionary<
+            (Mesh Mesh, Material Material, int Submesh, int Layer, uint RenderingLayerMask,
+             ShadowCastingMode ShadowCastingMode, bool ReceiveShadows,
+             LightProbeUsage LightProbeUsage, ReflectionProbeUsage ReflectionProbeUsage), DrawBatch> batches = new();
         private readonly Plane[] frustumPlanes = new Plane[6];
-        private readonly Matrix4x4[] drawBuffer = new Matrix4x4[SafeMaxInstancesPerDraw];
 
         public int ManagedInstanceCount => instances.Count;
         public int BatchableInstanceCount { get; private set; }
 
-        private void OnEnable()
-        {
-            if (Application.isPlaying)
-                Rebuild();
-        }
+        private void OnEnable() => Rebuild();
 
         private void OnDisable() => RestoreAll();
-
-        private void OnValidate()
-        {
-            maxInstancesPerDraw = Mathf.Clamp(maxInstancesPerDraw, 1, SafeMaxInstancesPerDraw);
-        }
 
         /// <summary>Call after changing the hierarchy, LODGroup, meshes, or materials.</summary>
         public void Rebuild()
@@ -78,20 +73,18 @@ namespace WhaleMovie.Common
             if (targetCamera == null)
                 return;
 
-            if (frustumCulling)
-                GeometryUtility.CalculateFrustumPlanes(targetCamera, frustumPlanes);
+            GeometryUtility.CalculateFrustumPlanes(targetCamera, frustumPlanes);
 
             foreach (DrawBatch batch in batches.Values)
-                batch.Clear();
+                batch.Matrices.Clear();
 
             bool canInstance = SystemInfo.supportsInstancing;
-            for (int i = 0; i < instances.Count; i++)
+            foreach (Instance instance in instances)
             {
-                Instance instance = instances[i];
-                if (instance.Root == null || !instance.Root.gameObject.activeInHierarchy ||
-                    instance.LodGroup == null || instance.Animation == null)
+                if (instance.LodGroup == null || !instance.LodGroup.gameObject.activeInHierarchy ||
+                    instance.Animation == null)
                 {
-                    StopBatch(instance);
+                    SetBatching(instance, false);
                     if (instance.Animation != null)
                         instance.Animation.Restore();
                     continue;
@@ -105,10 +98,7 @@ namespace WhaleMovie.Common
                 bool batchLod2 = canInstance && pauseAnimation && lod == 2 && instance.CanBatch &&
                                  instance.Animation.IsPaused &&
                                  (instance.Batching || instance.LodGroup.enabled);
-                if (batchLod2)
-                    StartBatch(instance);
-                else
-                    StopBatch(instance);
+                SetBatching(instance, batchLod2);
 
                 if (!pauseAnimation)
                     instance.Animation.SetPaused(false);
@@ -117,7 +107,7 @@ namespace WhaleMovie.Common
                     continue;
 
                 Bounds bounds = GetLod2Bounds(instance);
-                if (frustumCulling && !GeometryUtility.TestPlanesAABB(frustumPlanes, bounds))
+                if (!GeometryUtility.TestPlanesAABB(frustumPlanes, bounds))
                     continue;
 
                 foreach (Part part in instance.Lod2Parts)
@@ -125,10 +115,13 @@ namespace WhaleMovie.Common
                     Matrix4x4 matrix = part.Renderer.transform.localToWorldMatrix;
                     for (int submesh = 0; submesh < part.Mesh.subMeshCount; submesh++)
                     {
-                        var key = new BatchKey(part, submesh);
+                        MeshRenderer renderer = part.Renderer;
+                        var key = (part.Mesh, part.Materials[submesh], submesh, renderer.gameObject.layer,
+                            renderer.renderingLayerMask, renderer.shadowCastingMode, renderer.receiveShadows,
+                            renderer.lightProbeUsage, renderer.reflectionProbeUsage);
                         if (!batches.TryGetValue(key, out DrawBatch batch))
                         {
-                            batch = new DrawBatch(key);
+                            batch = new DrawBatch();
                             batches.Add(key, batch);
                         }
                         batch.Add(matrix, part.Renderer.bounds);
@@ -136,12 +129,13 @@ namespace WhaleMovie.Common
                 }
             }
 
-            foreach (DrawBatch batch in batches.Values)
+            foreach (var entry in batches)
             {
+                DrawBatch batch = entry.Value;
                 if (batch.Matrices.Count == 0)
                     continue;
 
-                BatchKey key = batch.Key;
+                var key = entry.Key;
                 var renderParams = new RenderParams(key.Material)
                 {
                     camera = targetCamera,
@@ -156,11 +150,10 @@ namespace WhaleMovie.Common
 
                 try
                 {
-                    for (int start = 0; start < batch.Matrices.Count; start += maxInstancesPerDraw)
+                    for (int start = 0; start < batch.Matrices.Count; start += MaxInstancesPerDraw)
                     {
-                        int count = Mathf.Min(maxInstancesPerDraw, batch.Matrices.Count - start);
-                        batch.Matrices.CopyTo(start, drawBuffer, 0, count);
-                        Graphics.RenderMeshInstanced(renderParams, key.Mesh, key.Submesh, drawBuffer, count);
+                        int count = Mathf.Min(MaxInstancesPerDraw, batch.Matrices.Count - start);
+                        Graphics.RenderMeshInstanced(renderParams, key.Mesh, key.Submesh, batch.Matrices, count, start);
                     }
                 }
                 catch (InvalidOperationException exception)
@@ -199,24 +192,18 @@ namespace WhaleMovie.Common
         private static bool TryCreateInstance(Transform root, out Instance instance)
         {
             instance = null;
-            DynamicLODAnimation[] animations = root.GetComponentsInChildren<DynamicLODAnimation>(true);
-            LODGroup[] lodGroups = root.GetComponentsInChildren<LODGroup>(true);
-            if (animations.Length != 1 || lodGroups.Length != 1)
+            if (!root.TryGetComponent(out DynamicLODAnimation animation) ||
+                !root.TryGetComponent(out LODGroup lodGroup) || animation.TargetAnimator == null)
                 return false;
 
-            Animator animator = animations[0].TargetAnimator;
-            if (animator == null || !animator.transform.IsChildOf(root))
-                return false;
-
-            LOD[] lods = lodGroups[0].GetLODs();
+            LOD[] lods = lodGroup.GetLODs();
             if (lods.Length < 3)
                 return false;
 
             instance = new Instance
             {
-                Root = root,
-                Animation = animations[0],
-                LodGroup = lodGroups[0],
+                Animation = animation,
+                LodGroup = lodGroup,
                 Thresholds = new float[lods.Length]
             };
             var groupRenderers = new HashSet<Renderer>();
@@ -231,7 +218,7 @@ namespace WhaleMovie.Common
             }
             instance.GroupRenderers = new List<Renderer>(groupRenderers).ToArray();
             instance.PreviousRendererStates = new bool[instance.GroupRenderers.Length];
-            instance.CanBatch = lodGroups[0].fadeMode == LODFadeMode.None &&
+            instance.CanBatch = lodGroup.fadeMode == LODFadeMode.None &&
                                 TryCreateLod2Parts(lods[2], out instance.Lod2Parts);
             return true;
         }
@@ -277,43 +264,29 @@ namespace WhaleMovie.Common
             return bounds;
         }
 
-        private static void StartBatch(Instance instance)
+        private static void SetBatching(Instance instance, bool batching)
         {
-            if (instance.Batching)
+            if (instance.Batching == batching)
                 return;
 
             for (int i = 0; i < instance.GroupRenderers.Length; i++)
             {
                 Renderer renderer = instance.GroupRenderers[i];
-                instance.PreviousRendererStates[i] = renderer != null && renderer.enabled;
+                if (batching)
+                    instance.PreviousRendererStates[i] = renderer != null && renderer.enabled;
                 if (renderer != null)
-                    renderer.enabled = false;
-            }
-            instance.LodGroup.enabled = false;
-            instance.Batching = true;
-        }
-
-        private static void StopBatch(Instance instance)
-        {
-            if (!instance.Batching)
-                return;
-
-            for (int i = 0; i < instance.GroupRenderers.Length; i++)
-            {
-                Renderer renderer = instance.GroupRenderers[i];
-                if (renderer != null)
-                    renderer.enabled = instance.PreviousRendererStates[i];
+                    renderer.enabled = !batching && instance.PreviousRendererStates[i];
             }
             if (instance.LodGroup != null)
-                instance.LodGroup.enabled = true;
-            instance.Batching = false;
+                instance.LodGroup.enabled = !batching;
+            instance.Batching = batching;
         }
 
         private void RestoreAll()
         {
             foreach (Instance instance in instances)
             {
-                StopBatch(instance);
+                SetBatching(instance, false);
                 if (instance.Animation != null)
                     instance.Animation.Restore();
             }
@@ -324,7 +297,6 @@ namespace WhaleMovie.Common
 
         private sealed class Instance
         {
-            public Transform Root;
             public DynamicLODAnimation Animation;
             public LODGroup LodGroup;
             public float[] Thresholds;
@@ -349,84 +321,18 @@ namespace WhaleMovie.Common
             }
         }
 
-        private struct BatchKey : IEquatable<BatchKey>
-        {
-            public readonly Mesh Mesh;
-            public readonly Material Material;
-            public readonly int Submesh;
-            public readonly int Layer;
-            public readonly uint RenderingLayerMask;
-            public readonly ShadowCastingMode ShadowCastingMode;
-            public readonly bool ReceiveShadows;
-            public readonly LightProbeUsage LightProbeUsage;
-            public readonly ReflectionProbeUsage ReflectionProbeUsage;
-
-            public BatchKey(Part part, int submesh)
-            {
-                MeshRenderer renderer = part.Renderer;
-                Mesh = part.Mesh;
-                Material = part.Materials[submesh];
-                Submesh = submesh;
-                Layer = renderer.gameObject.layer;
-                RenderingLayerMask = renderer.renderingLayerMask;
-                ShadowCastingMode = renderer.shadowCastingMode;
-                ReceiveShadows = renderer.receiveShadows;
-                LightProbeUsage = renderer.lightProbeUsage;
-                ReflectionProbeUsage = renderer.reflectionProbeUsage;
-            }
-
-            public bool Equals(BatchKey other)
-            {
-                return Mesh == other.Mesh && Material == other.Material && Submesh == other.Submesh &&
-                       Layer == other.Layer && RenderingLayerMask == other.RenderingLayerMask &&
-                       ShadowCastingMode == other.ShadowCastingMode && ReceiveShadows == other.ReceiveShadows &&
-                       LightProbeUsage == other.LightProbeUsage && ReflectionProbeUsage == other.ReflectionProbeUsage;
-            }
-
-            public override bool Equals(object obj) => obj is BatchKey other && Equals(other);
-
-            public override int GetHashCode()
-            {
-                unchecked
-                {
-                    int hash = Mesh != null ? Mesh.GetHashCode() : 0;
-                    hash = (hash * 397) ^ (Material != null ? Material.GetHashCode() : 0);
-                    hash = (hash * 397) ^ Submesh;
-                    hash = (hash * 397) ^ Layer;
-                    hash = (hash * 397) ^ RenderingLayerMask.GetHashCode();
-                    hash = (hash * 397) ^ (int)ShadowCastingMode;
-                    hash = (hash * 397) ^ (ReceiveShadows ? 1 : 0);
-                    hash = (hash * 397) ^ (int)LightProbeUsage;
-                    return (hash * 397) ^ (int)ReflectionProbeUsage;
-                }
-            }
-        }
-
         private sealed class DrawBatch
         {
-            public readonly BatchKey Key;
             public readonly List<Matrix4x4> Matrices = new List<Matrix4x4>();
             public Bounds Bounds;
-            private bool hasBounds;
-
-            public DrawBatch(BatchKey key) => Key = key;
-
-            public void Clear()
-            {
-                Matrices.Clear();
-                hasBounds = false;
-            }
 
             public void Add(Matrix4x4 matrix, Bounds bounds)
             {
-                Matrices.Add(matrix);
-                if (!hasBounds)
-                {
+                if (Matrices.Count == 0)
                     Bounds = bounds;
-                    hasBounds = true;
-                }
                 else
                     Bounds.Encapsulate(bounds);
+                Matrices.Add(matrix);
             }
         }
     }

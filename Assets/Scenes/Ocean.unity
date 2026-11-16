@@ -5123,6 +5123,7 @@ MonoBehaviour:
   fallbackWaterLevel: 0
   enterDepth: 0.08
   exitHeight: 0.08
+  UnderWaterScene: {fileID: 1240336975}
 --- !u!114 &716615664
 MonoBehaviour:
   m_ObjectHideFlags: 0

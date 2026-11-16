@@ -2,7 +2,7 @@ using UnityEngine;
 
 namespace WhaleMovie.Common
 {
-    /// <summary>Opt in to pausing the parent Animator from LOD2 onward.</summary>
+    /// <summary>Opt in to pausing the Animator on this instance root from LOD2 onward.</summary>
     [DisallowMultipleComponent]
     public sealed class DynamicLODAnimation : MonoBehaviour
     {
@@ -61,7 +61,7 @@ namespace WhaleMovie.Common
         private Animator FindAnimator()
         {
             if (animator == null)
-                animator = GetComponentInParent<Animator>();
+                animator = GetComponent<Animator>();
             return animator;
         }
 
