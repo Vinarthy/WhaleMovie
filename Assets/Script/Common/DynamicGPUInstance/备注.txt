@@ -1,0 +1,3 @@
+ps：
+LOD2 及更远：使用 timeScale = 0 的暂停材质副本。
+shader属性的引用名必须是timeScale

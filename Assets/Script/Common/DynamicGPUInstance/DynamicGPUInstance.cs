@@ -6,13 +6,13 @@ using UnityEngine.Rendering;
 namespace WhaleMovie.Common
 {
     /// <summary>
-    /// 用时按现有静态管理器的层级摆放：管理器 → 分组 → 实例根 → LOD 子物体。
-    /// 实例根需要 Animator 和 LODGroup；LOD2 要合批，需使用 MeshRenderer、共享网格与材质，材质开启 GPU Instancing，并把 LODGroup 的 Fade Mode 设为 None。
+    /// Shader vertex animation batches at every valid LOD; skeletal animation batches only at paused LOD2.
+    /// 实例根需要 LODGroup 和 DynamicLODAnimation；骨骼动画另需 Animator；LOD2 要合批，需使用 MeshRenderer、共享网格与材质，材质开启 GPU Instancing，并把 LODGroup 的 Fade Mode 设为 None。
     ///LOD0、LOD1时保持原有animation动画，不合批
     ///一般用于少量分散的含动画的物体如海草摆动和非群聚小动物
-    /// Animator、LODGroup 和 DynamicLODAnimation 均挂在实例根物体上。
+    /// LODGroup、DynamicLODAnimation 及可选的 Animator 均挂在实例根物体上。
     /// VR 中把管理器的 Target Camera 指向头显相机。
-    ///后续可以使用顶点动画进行管理，在动画管理脚本进行顶点动画的暂停与播放
+    ///关于对顶点动画的管理：直接修改着色器
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class DynamicGPUInstance : MonoBehaviour
@@ -46,22 +46,13 @@ namespace WhaleMovie.Common
             if (targetCamera == null)
                 targetCamera = Camera.main;
 
-            foreach (Transform groupRoot in transform)
+            foreach (DynamicLODAnimation animation in GetComponentsInChildren<DynamicLODAnimation>())
             {
-                if (!groupRoot.gameObject.activeInHierarchy)
-                    continue;
-
-                foreach (Transform instanceRoot in groupRoot)
+                if (TryCreateInstance(animation.transform, out Instance instance))
                 {
-                    if (!instanceRoot.gameObject.activeInHierarchy)
-                        continue;
-
-                    if (TryCreateInstance(instanceRoot, out Instance instance))
-                    {
-                        instances.Add(instance);
-                        if (instance.CanBatch)
-                            BatchableInstanceCount++;
-                    }
+                    instances.Add(instance);
+                    if (instance.CanBatch)
+                        BatchableInstanceCount++;
                 }
             }
         }
@@ -92,25 +83,27 @@ namespace WhaleMovie.Common
 
                 int lod = SelectLod(instance, targetCamera);
                 bool pauseAnimation = instance.Animation.ManageAnimation && (lod >= 2 || lod < 0);
-                if (pauseAnimation)
+                if (pauseAnimation && !instance.Animation.IsPaused)
                     instance.Animation.SetPaused(true);
 
-                bool batchLod2 = canInstance && pauseAnimation && lod == 2 && instance.CanBatch &&
-                                 instance.Animation.IsPaused &&
-                                 (instance.Batching || instance.LodGroup.enabled);
-                SetBatching(instance, batchLod2);
-
-                if (!pauseAnimation)
+                if (!pauseAnimation && instance.Animation.NeedsRestore)
                     instance.Animation.SetPaused(false);
+
+                Part[] parts = lod >= 0 ? instance.LodParts[lod] : null;
+                bool batchCurrentLod = canInstance && parts != null &&
+                    (instance.Animation.IsVertexAnimation ||
+                     (lod == 2 && pauseAnimation && instance.Animation.IsPaused)) &&
+                    (instance.Batching || instance.LodGroup.enabled);
+                SetBatching(instance, batchCurrentLod);
 
                 if (!instance.Batching)
                     continue;
 
-                Bounds bounds = GetLod2Bounds(instance);
+                Bounds bounds = GetPartsBounds(parts);
                 if (!GeometryUtility.TestPlanesAABB(frustumPlanes, bounds))
                     continue;
 
-                foreach (Part part in instance.Lod2Parts)
+                foreach (Part part in parts)
                 {
                     Matrix4x4 matrix = part.Renderer.transform.localToWorldMatrix;
                     for (int submesh = 0; submesh < part.Mesh.subMeshCount; submesh++)
@@ -193,7 +186,8 @@ namespace WhaleMovie.Common
         {
             instance = null;
             if (!root.TryGetComponent(out DynamicLODAnimation animation) ||
-                !root.TryGetComponent(out LODGroup lodGroup) || animation.TargetAnimator == null)
+                !root.TryGetComponent(out LODGroup lodGroup) ||
+                (!animation.IsVertexAnimation && animation.TargetAnimator == null))
                 return false;
 
             LOD[] lods = lodGroup.GetLODs();
@@ -204,7 +198,8 @@ namespace WhaleMovie.Common
             {
                 Animation = animation,
                 LodGroup = lodGroup,
-                Thresholds = new float[lods.Length]
+                Thresholds = new float[lods.Length],
+                LodParts = new Part[lods.Length][]
             };
             var groupRenderers = new HashSet<Renderer>();
             for (int i = 0; i < lods.Length; i++)
@@ -218,20 +213,29 @@ namespace WhaleMovie.Common
             }
             instance.GroupRenderers = new List<Renderer>(groupRenderers).ToArray();
             instance.PreviousRendererStates = new bool[instance.GroupRenderers.Length];
-            instance.CanBatch = lodGroup.fadeMode == LODFadeMode.None &&
-                                TryCreateLod2Parts(lods[2], out instance.Lod2Parts);
+            if (lodGroup.fadeMode == LODFadeMode.None)
+            {
+                for (int i = 0; i < lods.Length; i++)
+                {
+                    if ((animation.IsVertexAnimation || i == 2) &&
+                        TryCreateParts(lods[i], out instance.LodParts[i]))
+                        instance.CanBatch = true;
+                }
+            }
+            if (instance.CanBatch)
+                animation.PauseStateChanged += instance.RefreshMaterials;
             return true;
         }
 
-        private static bool TryCreateLod2Parts(LOD lod2, out Part[] parts)
+        private static bool TryCreateParts(LOD lod, out Part[] parts)
         {
             parts = null;
-            if (lod2.renderers == null || lod2.renderers.Length == 0)
+            if (lod.renderers == null || lod.renderers.Length == 0)
                 return false;
 
             var result = new List<Part>();
             var seen = new HashSet<Renderer>();
-            foreach (Renderer renderer in lod2.renderers)
+            foreach (Renderer renderer in lod.renderers)
             {
                 if (!(renderer is MeshRenderer meshRenderer) || !seen.Add(renderer) ||
                     !meshRenderer.gameObject.activeInHierarchy || meshRenderer.HasPropertyBlock() ||
@@ -256,11 +260,11 @@ namespace WhaleMovie.Common
             return true;
         }
 
-        private static Bounds GetLod2Bounds(Instance instance)
+        private static Bounds GetPartsBounds(Part[] parts)
         {
-            Bounds bounds = instance.Lod2Parts[0].Renderer.bounds;
-            for (int i = 1; i < instance.Lod2Parts.Length; i++)
-                bounds.Encapsulate(instance.Lod2Parts[i].Renderer.bounds);
+            Bounds bounds = parts[0].Renderer.bounds;
+            for (int i = 1; i < parts.Length; i++)
+                bounds.Encapsulate(parts[i].Renderer.bounds);
             return bounds;
         }
 
@@ -288,7 +292,10 @@ namespace WhaleMovie.Common
             {
                 SetBatching(instance, false);
                 if (instance.Animation != null)
+                {
+                    instance.Animation.PauseStateChanged -= instance.RefreshMaterials;
                     instance.Animation.Restore();
+                }
             }
             instances.Clear();
             batches.Clear();
@@ -302,16 +309,28 @@ namespace WhaleMovie.Common
             public float[] Thresholds;
             public Renderer[] GroupRenderers;
             public bool[] PreviousRendererStates;
-            public Part[] Lod2Parts;
+            public Part[][] LodParts;
             public bool CanBatch;
             public bool Batching;
+
+            public void RefreshMaterials()
+            {
+                foreach (Part[] parts in LodParts)
+                {
+                    if (parts == null)
+                        continue;
+                    foreach (Part part in parts)
+                        if (part.Renderer != null)
+                            part.Materials = part.Renderer.sharedMaterials;
+                }
+            }
         }
 
         private sealed class Part
         {
             public readonly MeshRenderer Renderer;
             public readonly Mesh Mesh;
-            public readonly Material[] Materials;
+            public Material[] Materials;
 
             public Part(MeshRenderer renderer, Mesh mesh, Material[] materials)
             {
