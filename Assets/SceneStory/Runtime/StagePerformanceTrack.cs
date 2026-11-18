@@ -123,6 +123,7 @@ namespace AIBuilder.CreatureStage
             // 撤销或原生 Timeline 重排可能先于图重建，始终读取当前片段顺序。
             if (track != null) clips = track.GetClips().OrderBy(c => c.start).ToArray();
             var bound = playerData as StageActorDriver;
+            if (Application.isPlaying && bound != null && !bound.isActiveAndEnabled) bound = null;
             if (actor != bound) { if (actor != null) actor.Release(this); actor = bound; }
             if (actor == null || director == null || clips == null || clips.Length == 0) return;
             try
